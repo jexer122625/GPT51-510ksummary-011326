@@ -11,7 +11,7 @@ import anthropic
 # For Grok (xAI) - you may need to adapt base_url depending on your setup
 from openai import OpenAI as GrokClient
 # Gemini Python client (adjust import to your chosen library)
-from google import google-generativeai
+import google-generativeai
 
 from PyPDF2 import PdfReader
 
