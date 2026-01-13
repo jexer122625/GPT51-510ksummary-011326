@@ -44,7 +44,7 @@ PAINTER_STYLES = [
 MODEL_OPTIONS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-3-preview",
+    "gemini-3-flash-preview",
     "gpt-4o-mini",
     "gpt-4.1-mini",
     "claude-3-5-sonnet-latest",
