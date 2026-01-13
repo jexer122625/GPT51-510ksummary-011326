@@ -13,3 +13,6 @@ python-docx
 anthropic
 httpx
 reportlab
+PyPDF2
+markdown
+anthropic
