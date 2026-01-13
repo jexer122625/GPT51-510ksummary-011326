@@ -13,7 +13,7 @@ from PyPDF2 import PdfReader
 from openai import OpenAI
 import anthropic
 from openai import OpenAI as GrokClient
-from google import genai  # Adjust to your chosen Gemini client
+import google.generativeai as genai  # UPDATED: use google-generativeai
 
 # ---------------------------------------------------
 # 1. Configuration & constants
@@ -133,27 +133,22 @@ STRINGS = {
     },
 }
 
-# Painter color palettes for WOW theming
 PAINTER_PALETTES = [
-    # 0-4
     {"accent": "#14b8a6", "accent_soft": "#ccfbf1", "card_bg_light": "#f9fafb", "card_bg_dark": "#020617"},
     {"accent": "#f97316", "accent_soft": "#ffedd5", "card_bg_light": "#fefce8", "card_bg_dark": "#030712"},
     {"accent": "#6366f1", "accent_soft": "#e0e7ff", "card_bg_light": "#eff6ff", "card_bg_dark": "#020617"},
     {"accent": "#ec4899", "accent_soft": "#fce7f3", "card_bg_light": "#fdf2ff", "card_bg_dark": "#020617"},
     {"accent": "#0ea5e9", "accent_soft": "#e0f2fe", "card_bg_light": "#f0f9ff", "card_bg_dark": "#020617"},
-    # 5-9
     {"accent": "#a855f7", "accent_soft": "#f3e8ff", "card_bg_light": "#faf5ff", "card_bg_dark": "#020617"},
     {"accent": "#22c55e", "accent_soft": "#dcfce7", "card_bg_light": "#f0fdf4", "card_bg_dark": "#020617"},
     {"accent": "#e11d48", "accent_soft": "#ffe4e6", "card_bg_light": "#fff1f2", "card_bg_dark": "#020617"},
     {"accent": "#06b6d4", "accent_soft": "#cffafe", "card_bg_light": "#ecfeff", "card_bg_dark": "#020617"},
     {"accent": "#facc15", "accent_soft": "#fef9c3", "card_bg_light": "#fefce8", "card_bg_dark": "#020617"},
-    # 10-14
     {"accent": "#4b5563", "accent_soft": "#e5e7eb", "card_bg_light": "#f9fafb", "card_bg_dark": "#020617"},
     {"accent": "#0f766e", "accent_soft": "#ccfbf1", "card_bg_light": "#ecfeff", "card_bg_dark": "#020617"},
     {"accent": "#7c3aed", "accent_soft": "#ede9fe", "card_bg_light": "#f5f3ff", "card_bg_dark": "#020617"},
     {"accent": "#3b82f6", "accent_soft": "#dbeafe", "card_bg_light": "#eff6ff", "card_bg_dark": "#020617"},
     {"accent": "#ea580c", "accent_soft": "#ffedd5", "card_bg_light": "#fff7ed", "card_bg_dark": "#020617"},
-    # 15-19
     {"accent": "#0891b2", "accent_soft": "#e0f2fe", "card_bg_light": "#f0f9ff", "card_bg_dark": "#020617"},
     {"accent": "#f97316", "accent_soft": "#ffedd5", "card_bg_light": "#fff7ed", "card_bg_dark": "#020617"},
     {"accent": "#16a34a", "accent_soft": "#bbf7d0", "card_bg_light": "#f0fdf4", "card_bg_dark": "#020617"},
@@ -187,7 +182,6 @@ def init_session_state():
         "dashboard": False,
         "chat": False,
     })
-    # NEW: multi-document snapshot history
     ss.setdefault("documents", [])
     ss.setdefault("current_doc_index", None)
 
@@ -272,7 +266,6 @@ def inject_theme_css(theme_mode: str, painter_index: int, font_scale: float, den
 
 def generate_html_report(summary_md: str, lang: str, theme_mode: str,
                          painter_index: int, font_scale: float, density: str) -> str:
-    """Generate a themed HTML report using current WOW theme settings."""
     palette = PAINTER_PALETTES[painter_index % len(PAINTER_PALETTES)]
     accent = palette["accent"]
     accent_soft = palette["accent_soft"]
@@ -394,15 +387,16 @@ def render_api_key_section(strings):
 
 
 # ---------------------------------------------------
-# 5. LLM call wrappers
+# 5. LLM call wrappers (UPDATED GEMINI PART)
 # ---------------------------------------------------
 
 def get_gemini_client():
+    """Configure google-generativeai and return the module as a client handle."""
     key = get_api_key("GEMINI_API_KEY", "gemini")
     if not key:
         raise RuntimeError("Gemini API key not configured.")
-    client = genai.Client(api_key=key)
-    return client
+    genai.configure(api_key=key)
+    return genai
 
 
 def get_openai_client():
@@ -427,22 +421,28 @@ def get_grok_client():
 
 
 def call_model(provider, model, system_prompt, user_content, max_tokens, schema=None):
+    """
+    Generic LLM call.
+    For Gemini, uses google-generativeai with optional response_schema.
+    """
     if provider == "gemini":
         client = get_gemini_client()
-        config = {
-            "system_instruction": system_prompt,
+
+        generation_config = {
             "max_output_tokens": max_tokens,
         }
         if schema:
-            config["response_schema"] = json.loads(schema)
-            config["response_mime_type"] = "application/json"
+            schema_dict = json.loads(schema)
+            generation_config["response_mime_type"] = "application/json"
+            generation_config["response_schema"] = schema_dict
 
-        result = client.models.generate_content(
-            model=model,
-            contents=user_content,
-            config=config
+        model_obj = client.GenerativeModel(
+            model_name=model,
+            system_instruction=system_prompt,
+            generation_config=generation_config,
         )
-        return result.text
+        resp = model_obj.generate_content(user_content)
+        return resp.text
 
     elif provider == "openai":
         client = get_openai_client()
@@ -615,12 +615,11 @@ def run_full_pipeline():
     status["dashboard"] = True
     status["chat"] = True
 
-    # NEW: auto-save snapshot after successful run
     save_current_document_snapshot(auto=True)
 
 
 # ---------------------------------------------------
-# 9. Document snapshot history (NEW FEATURE)
+# 9. Document snapshot history
 # ---------------------------------------------------
 
 def build_snapshot_label():
@@ -688,7 +687,7 @@ def render_history_section(strings):
 
 
 # ---------------------------------------------------
-# 10. Dashboard rendering (with WOW cards & checklist)
+# 10. Dashboard rendering & checklist
 # ---------------------------------------------------
 
 def render_completeness_checklist(strings, structured):
@@ -757,10 +756,8 @@ def render_dashboard(strings):
 
             st.markdown("<hr/>", unsafe_allow_html=True)
 
-            # Completeness checklist (NEW FEATURE)
             render_completeness_checklist(strings, structured)
 
-            # Key sections
             if "submitter_information" in structured:
                 st.markdown("<h4 class='wow-section-title'>Submitter Information</h4>", unsafe_allow_html=True)
                 sub = structured["submitter_information"]
@@ -794,7 +791,6 @@ def render_dashboard(strings):
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # NEW: Report export buttons
     if summary_md:
         col1, col2 = st.columns(2)
         with col1:
@@ -996,7 +992,6 @@ def main():
 
         strings = STRINGS[st.session_state["language"]]
 
-        # NEW: Output appearance controls
         st.markdown(f"### {strings['appearance_section']}")
         st.session_state["font_scale"] = st.slider(
             strings["font_scale"], 0.85, 1.3, st.session_state["font_scale"], step=0.05
@@ -1010,13 +1005,11 @@ def main():
 
         render_api_key_section(strings)
 
-        # NEW: Document history controls
         st.markdown("---")
         render_history_section(strings)
 
     strings = STRINGS[st.session_state["language"]]
 
-    # Inject WOW theme CSS for the whole page
     inject_theme_css(
         theme_mode=st.session_state["theme_mode"],
         painter_index=st.session_state["painter_style"],
