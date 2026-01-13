@@ -5,15 +5,14 @@ from io import BytesIO
 from datetime import datetime
 
 import streamlit as st
-
-from markdown import markdown  # For HTML export
+from markdown import markdown
 from PyPDF2 import PdfReader
 
 # ----- LLM clients -----
 from openai import OpenAI
 import anthropic
 from openai import OpenAI as GrokClient
-import google.generativeai as genai  # UPDATED: use google-generativeai
+import google.generativeai as genai
 
 # ---------------------------------------------------
 # 1. Configuration & constants
@@ -158,7 +157,7 @@ PAINTER_PALETTES = [
 
 
 # ---------------------------------------------------
-# 2. Utility: state initialization
+# 2. State initialization
 # ---------------------------------------------------
 
 def init_session_state():
@@ -187,7 +186,7 @@ def init_session_state():
 
 
 # ---------------------------------------------------
-# 3. Theming: CSS injection & HTML export
+# 3. Theming
 # ---------------------------------------------------
 
 def inject_theme_css(theme_mode: str, painter_index: int, font_scale: float, density: str):
@@ -343,7 +342,7 @@ def generate_html_report(summary_md: str, lang: str, theme_mode: str,
 
 
 # ---------------------------------------------------
-# 4. API key handling
+# 4. API keys
 # ---------------------------------------------------
 
 def get_api_key(name: str, session_key: str):
@@ -387,11 +386,24 @@ def render_api_key_section(strings):
 
 
 # ---------------------------------------------------
-# 5. LLM call wrappers (UPDATED GEMINI PART)
+# 5. LLM call wrappers (Gemini error-safe)
 # ---------------------------------------------------
 
+def normalize_provider(provider: str) -> str:
+    """Normalize provider names, tolerate minor typos like 'anthopic'."""
+    p = (provider or "").lower()
+    if "gemini" in p or p == "google":
+        return "gemini"
+    if "openai" in p or p.startswith("gpt"):
+        return "openai"
+    if "anth" in p:
+        return "anthropic"
+    if "grok" in p or "xai" in p:
+        return "grok"
+    return provider
+
+
 def get_gemini_client():
-    """Configure google-generativeai and return the module as a client handle."""
     key = get_api_key("GEMINI_API_KEY", "gemini")
     if not key:
         raise RuntimeError("Gemini API key not configured.")
@@ -422,64 +434,67 @@ def get_grok_client():
 
 def call_model(provider, model, system_prompt, user_content, max_tokens, schema=None):
     """
-    Generic LLM call.
-    For Gemini, uses google-generativeai with optional response_schema.
+    Generic LLM call with robust error handling.
+    NOTE: For Gemini we DO NOT use response_schema here, to avoid gRPC INVALID_ARGUMENT issues.
     """
-    if provider == "gemini":
-        client = get_gemini_client()
+    provider = normalize_provider(provider)
 
-        generation_config = {
-            "max_output_tokens": max_tokens,
-        }
-        if schema:
-            schema_dict = json.loads(schema)
-            generation_config["response_mime_type"] = "application/json"
-            generation_config["response_schema"] = schema_dict
+    try:
+        if provider == "gemini":
+            client = get_gemini_client()
+            generation_config = {
+                "max_output_tokens": max_tokens,
+            }
+            # If you really want structured output, embed schema instructions into system_prompt/user_content
+            model_obj = client.GenerativeModel(
+                model_name=model,
+                system_instruction=system_prompt,
+                generation_config=generation_config,
+            )
+            resp = model_obj.generate_content(user_content)
+            # google-generativeai puts text in resp.text
+            return getattr(resp, "text", "") or str(resp)
 
-        model_obj = client.GenerativeModel(
-            model_name=model,
-            system_instruction=system_prompt,
-            generation_config=generation_config,
-        )
-        resp = model_obj.generate_content(user_content)
-        return resp.text
+        elif provider == "openai":
+            client = get_openai_client()
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=max_tokens,
+            )
+            return resp.choices[0].message.content
 
-    elif provider == "openai":
-        client = get_openai_client()
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            max_tokens=max_tokens,
-        )
-        return resp.choices[0].message.content
+        elif provider == "anthropic":
+            client = get_anthropic_client()
+            resp = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            return resp.content[0].text
 
-    elif provider == "anthropic":
-        client = get_anthropic_client()
-        resp = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        return resp.content[0].text
+        elif provider == "grok":
+            client = get_grok_client()
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=max_tokens,
+            )
+            return resp.choices[0].message.content
 
-    elif provider == "grok":
-        client = get_grok_client()
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            max_tokens=max_tokens,
-        )
-        return resp.choices[0].message.content
+        else:
+            return f"[ERROR] Unsupported provider: {provider}"
 
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    except Exception as e:
+        # Prevent backend exception from crashing Streamlit; return error text as output
+        return f"[ERROR calling {provider} model {model}: {e}]"
 
 
 # ---------------------------------------------------
@@ -515,7 +530,7 @@ def extract_text_from_file(uploaded_file):
 
 
 # ---------------------------------------------------
-# 7. WOW status indicators
+# 7. Status indicators
 # ---------------------------------------------------
 
 def render_status_indicators(strings):
@@ -534,9 +549,9 @@ def render_status_indicators(strings):
 
 
 # ---------------------------------------------------
-# 8. Agents pipeline handling
+# 8. Agents pipeline
 # ---------------------------------------------------
-###
+
 def load_agents_config():
     """
     Load agents.yaml into session_state["agents_config"] as a list of dicts.
@@ -549,8 +564,7 @@ def load_agents_config():
         with open("agents.yaml", "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     except FileNotFoundError:
-        st.error("agents.yaml not found in the app directory. "
-                 "Please add agents.yaml or adjust the path.")
+        st.error("agents.yaml not found in the app directory. Please add agents.yaml.")
         st.session_state["agents_config"] = []
         return
     except Exception as e:
@@ -558,11 +572,10 @@ def load_agents_config():
         st.session_state["agents_config"] = []
         return
 
-    agents_raw = cfg.get("agents", cfg)  # allow either top-level 'agents:' or direct list/dict
+    agents_raw = cfg.get("agents", cfg)
 
-    # Normalize to a list of dicts
+    # Normalize to list of dicts
     if isinstance(agents_raw, dict):
-        # Maybe user defined a dict of agents keyed by id
         agents = []
         for key, val in agents_raw.items():
             if isinstance(val, dict):
@@ -572,11 +585,9 @@ def load_agents_config():
     elif isinstance(agents_raw, list):
         agents = [a for a in agents_raw if isinstance(a, dict)]
     else:
-        st.error("agents.yaml has an unexpected structure. "
-                 "Expected 'agents:' as a list or dict.")
+        st.error("agents.yaml has unexpected structure. Expected 'agents:' as list or dict.")
         agents = []
 
-    # Basic validation: must have id and label
     valid_agents = []
     for a in agents:
         if "id" not in a or "label" not in a:
@@ -585,22 +596,23 @@ def load_agents_config():
         valid_agents.append(a)
 
     if not valid_agents:
-        st.error("No valid agents found in agents.yaml. "
-                 "Please check that each agent has at least 'id' and 'label'.")
+        st.error("No valid agents found in agents.yaml.")
     st.session_state["agents_config"] = valid_agents
-###
+
+
 def run_single_agent(agent_def, input_text, agent_idx):
     agent_id = agent_def["id"]
-    custom_model = st.session_state.get(f"agent_{agent_id}_model", agent_def["default_model"])
+    provider = agent_def.get("provider", "gemini")
+    custom_model = st.session_state.get(f"agent_{agent_id}_model", agent_def.get("default_model", MODEL_OPTIONS[0]))
     custom_max_tokens = st.session_state.get(
         f"agent_{agent_id}_max_tokens", agent_def.get("max_tokens", DEFAULT_MAX_TOKENS)
     )
     custom_prompt = st.session_state.get(
-        f"agent_{agent_id}_prompt", agent_def["system_prompt"]
+        f"agent_{agent_id}_prompt", agent_def.get("system_prompt", "")
     )
 
     output = call_model(
-        provider=agent_def["provider"],
+        provider=provider,
         model=custom_model,
         system_prompt=custom_prompt,
         user_content=input_text,
@@ -613,11 +625,15 @@ def run_single_agent(agent_def, input_text, agent_idx):
 
 def run_full_pipeline():
     load_agents_config()
-    agents = st.session_state["agents_config"]
-    text_input = st.session_state["raw_input_text"]
+    agents = st.session_state.get("agents_config") or []
+    text_input = st.session_state.get("raw_input_text", "")
 
     if not text_input.strip():
         st.warning("No 510(k) text found. Please upload or paste content.")
+        return
+
+    if not agents:
+        st.warning("No agents configured. Check agents.yaml.")
         return
 
     status = st.session_state["pipeline_status"]
@@ -629,19 +645,19 @@ def run_full_pipeline():
     progress = st.progress(0)
 
     for idx, agent in enumerate(agents):
-        with st.spinner(f"Running {agent['label']}..."):
+        with st.spinner(f"Running {agent.get('label', agent.get('id', 'agent'))}..."):
             last_output = run_single_agent(agent, last_output, idx)
         progress.progress((idx + 1) / len(agents))
 
+    # best-effort: update global key artifacts if present
     structured_id = "extract_510k_structured"
     summary_id = "generate_dashboard_summary"
     infographics_id = "design_infographics"
 
     if structured_id in st.session_state["pipeline_outputs"]:
+        raw = st.session_state["pipeline_outputs"][structured_id]
         try:
-            st.session_state["structured_json"] = json.loads(
-                st.session_state["pipeline_outputs"][structured_id]
-            )
+            st.session_state["structured_json"] = json.loads(raw)
         except Exception:
             st.session_state["structured_json"] = None
 
@@ -649,10 +665,9 @@ def run_full_pipeline():
         st.session_state["summary_markdown"] = st.session_state["pipeline_outputs"][summary_id]
 
     if infographics_id in st.session_state["pipeline_outputs"]:
+        raw = st.session_state["pipeline_outputs"][infographics_id]
         try:
-            st.session_state["infographics_layout"] = json.loads(
-                st.session_state["pipeline_outputs"][infographics_id]
-            )
+            st.session_state["infographics_layout"] = json.loads(raw)
         except Exception:
             st.session_state["infographics_layout"] = None
 
@@ -664,7 +679,7 @@ def run_full_pipeline():
 
 
 # ---------------------------------------------------
-# 9. Document snapshot history
+# 9. Snapshot history
 # ---------------------------------------------------
 
 def build_snapshot_label():
@@ -732,7 +747,7 @@ def render_history_section(strings):
 
 
 # ---------------------------------------------------
-# 10. Dashboard rendering & checklist
+# 10. Dashboard & checklist
 # ---------------------------------------------------
 
 def render_completeness_checklist(strings, structured):
@@ -806,8 +821,9 @@ def render_dashboard(strings):
             if "submitter_information" in structured:
                 st.markdown("<h4 class='wow-section-title'>Submitter Information</h4>", unsafe_allow_html=True)
                 sub = structured["submitter_information"]
-                rows = "\n".join(f"| {k} | {v} |" for k, v in sub.items())
-                st.markdown("| Field | Value |\n|---|---|\n" + rows)
+                if isinstance(sub, dict):
+                    rows = "\n".join(f"| {k} | {v} |" for k, v in sub.items())
+                    st.markdown("| Field | Value |\n|---|---|\n" + rows)
 
             st.markdown("<h4 class='wow-section-title'>Indications for Use</h4>", unsafe_allow_html=True)
             st.markdown(
@@ -922,9 +938,9 @@ def render_chat_panel(strings):
 
 
 # ---------------------------------------------------
-# 12. Agent pipeline UI
+# 12. Pipeline UI
 # ---------------------------------------------------
-###
+
 def render_pipeline_panel(strings):
     load_agents_config()
     agents = st.session_state.get("agents_config") or []
@@ -939,7 +955,6 @@ def render_pipeline_panel(strings):
         run_full_pipeline()
 
     for idx, agent in enumerate(agents):
-        # Robust checks to avoid crashes on bad config
         if not isinstance(agent, dict):
             st.warning(f"Skipping non-dict agent definition at index {idx}: {agent}")
             continue
@@ -951,13 +966,10 @@ def render_pipeline_panel(strings):
             st.warning(f"Skipping agent without 'id' at index {idx}: {agent}")
             continue
 
-        default_model = agent.get("default_model", MODEL_OPTIONS[0])
-        provider = agent.get("provider", "gemini")
-
         st.markdown("---")
         st.markdown(f"#### {agent_label} ({agent_id})")
 
-        # Model selector
+        default_model = agent.get("default_model", MODEL_OPTIONS[0])
         model_key = f"agent_{agent_id}_model"
         st.session_state.setdefault(model_key, default_model)
         st.selectbox(
@@ -967,7 +979,6 @@ def render_pipeline_panel(strings):
             key=model_key,
         )
 
-        # Max tokens
         max_tokens_key = f"agent_{agent_id}_max_tokens"
         st.session_state.setdefault(max_tokens_key, agent.get("max_tokens", DEFAULT_MAX_TOKENS))
         st.number_input(
@@ -978,7 +989,6 @@ def render_pipeline_panel(strings):
             key=max_tokens_key,
         )
 
-        # Prompt editor
         prompt_key = f"agent_{agent_id}_prompt"
         st.session_state.setdefault(prompt_key, agent.get("system_prompt", ""))
         st.text_area(
@@ -987,7 +997,6 @@ def render_pipeline_panel(strings):
             height=150,
         )
 
-        # Input to this agent
         if idx == 0:
             default_input = st.session_state.get("raw_input_text", "")
         else:
@@ -1003,7 +1012,6 @@ def render_pipeline_panel(strings):
             height=150,
         )
 
-        # Output (editable)
         output_key = f"agent_{agent_id}_output"
         st.session_state.setdefault(output_key, st.session_state["pipeline_outputs"].get(agent_id, ""))
 
@@ -1012,7 +1020,6 @@ def render_pipeline_panel(strings):
                 output = run_single_agent(agent, st.session_state[input_key], idx)
                 st.session_state[output_key] = output
 
-                # Update global structured/summary/infographics if this is one of the core agents
                 if agent_id == "extract_510k_structured":
                     try:
                         st.session_state["structured_json"] = json.loads(output)
@@ -1031,7 +1038,8 @@ def render_pipeline_panel(strings):
             key=output_key,
             height=200,
         )
-###
+
+
 # ---------------------------------------------------
 # 13. Main app
 # ---------------------------------------------------
@@ -1073,7 +1081,6 @@ def main():
         st.session_state["density"] = density_label
 
         render_api_key_section(strings)
-
         st.markdown("---")
         render_history_section(strings)
 
