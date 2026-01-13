@@ -536,14 +536,59 @@ def render_status_indicators(strings):
 # ---------------------------------------------------
 # 8. Agents pipeline handling
 # ---------------------------------------------------
-
+###
 def load_agents_config():
-    if st.session_state["agents_config"] is None:
+    """
+    Load agents.yaml into session_state["agents_config"] as a list of dicts.
+    Handles malformed or missing configurations gracefully.
+    """
+    if st.session_state["agents_config"] is not None:
+        return
+
+    try:
         with open("agents.yaml", "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        st.session_state["agents_config"] = cfg["agents"]
+            cfg = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        st.error("agents.yaml not found in the app directory. "
+                 "Please add agents.yaml or adjust the path.")
+        st.session_state["agents_config"] = []
+        return
+    except Exception as e:
+        st.error(f"Error loading agents.yaml: {e}")
+        st.session_state["agents_config"] = []
+        return
 
+    agents_raw = cfg.get("agents", cfg)  # allow either top-level 'agents:' or direct list/dict
 
+    # Normalize to a list of dicts
+    if isinstance(agents_raw, dict):
+        # Maybe user defined a dict of agents keyed by id
+        agents = []
+        for key, val in agents_raw.items():
+            if isinstance(val, dict):
+                if "id" not in val:
+                    val["id"] = str(key)
+                agents.append(val)
+    elif isinstance(agents_raw, list):
+        agents = [a for a in agents_raw if isinstance(a, dict)]
+    else:
+        st.error("agents.yaml has an unexpected structure. "
+                 "Expected 'agents:' as a list or dict.")
+        agents = []
+
+    # Basic validation: must have id and label
+    valid_agents = []
+    for a in agents:
+        if "id" not in a or "label" not in a:
+            st.warning(f"Skipping invalid agent (missing 'id' or 'label'): {a}")
+            continue
+        valid_agents.append(a)
+
+    if not valid_agents:
+        st.error("No valid agents found in agents.yaml. "
+                 "Please check that each agent has at least 'id' and 'label'.")
+    st.session_state["agents_config"] = valid_agents
+###
 def run_single_agent(agent_def, input_text, agent_idx):
     agent_id = agent_def["id"]
     custom_model = st.session_state.get(f"agent_{agent_id}_model", agent_def["default_model"])
