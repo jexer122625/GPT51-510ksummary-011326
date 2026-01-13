@@ -2,18 +2,18 @@ import os
 import json
 import yaml
 from io import BytesIO
+from datetime import datetime
 
 import streamlit as st
+
+from markdown import markdown  # For HTML export
+from PyPDF2 import PdfReader
 
 # ----- LLM clients -----
 from openai import OpenAI
 import anthropic
-# For Grok (xAI) - you may need to adapt base_url depending on your setup
 from openai import OpenAI as GrokClient
-# Gemini Python client (adjust import to your chosen library)
-import google-generativeai
-
-from PyPDF2 import PdfReader
+from google import genai  # Adjust to your chosen Gemini client
 
 # ---------------------------------------------------
 # 1. Configuration & constants
@@ -79,6 +79,20 @@ STRINGS = {
         "chat_placeholder": "Ask a question about this 510(k) summary...",
         "api_keys_section": "API Keys",
         "missing_keys_note": "If environment keys are not set, please enter them here. They will not be displayed.",
+        "download_md": "Download Summary (Markdown)",
+        "download_html": "Download Themed Report (HTML)",
+        "appearance_section": "Output Appearance",
+        "font_scale": "Font size scale",
+        "density": "Layout density",
+        "density_comfortable": "Comfortable",
+        "density_compact": "Compact",
+        "history_section": "Document History",
+        "save_snapshot": "Save current document snapshot",
+        "select_snapshot": "Load snapshot",
+        "no_snapshots": "No snapshots saved yet.",
+        "checklist_title": "Regulatory Completeness Checklist",
+        "checklist_present": "Present",
+        "checklist_missing": "Missing",
     },
     "zh_tw": {
         "title": "WOW FDA 510(k) 分析器",
@@ -102,8 +116,51 @@ STRINGS = {
         "chat_placeholder": "針對此 510(k) 摘要提出問題……",
         "api_keys_section": "API 金鑰",
         "missing_keys_note": "若環境變數未設定，請在此輸入。系統不會顯示金鑰內容。",
+        "download_md": "下載摘要（Markdown）",
+        "download_html": "下載主題化報告（HTML）",
+        "appearance_section": "輸出外觀",
+        "font_scale": "字體大小比例",
+        "density": "版面密度",
+        "density_comfortable": "寬鬆",
+        "density_compact": "緊湊",
+        "history_section": "文件歷史",
+        "save_snapshot": "儲存目前文件快照",
+        "select_snapshot": "載入快照",
+        "no_snapshots": "目前尚無快照。",
+        "checklist_title": "法規完整性檢查表",
+        "checklist_present": "已填入",
+        "checklist_missing": "缺少",
     },
 }
+
+# Painter color palettes for WOW theming
+PAINTER_PALETTES = [
+    # 0-4
+    {"accent": "#14b8a6", "accent_soft": "#ccfbf1", "card_bg_light": "#f9fafb", "card_bg_dark": "#020617"},
+    {"accent": "#f97316", "accent_soft": "#ffedd5", "card_bg_light": "#fefce8", "card_bg_dark": "#030712"},
+    {"accent": "#6366f1", "accent_soft": "#e0e7ff", "card_bg_light": "#eff6ff", "card_bg_dark": "#020617"},
+    {"accent": "#ec4899", "accent_soft": "#fce7f3", "card_bg_light": "#fdf2ff", "card_bg_dark": "#020617"},
+    {"accent": "#0ea5e9", "accent_soft": "#e0f2fe", "card_bg_light": "#f0f9ff", "card_bg_dark": "#020617"},
+    # 5-9
+    {"accent": "#a855f7", "accent_soft": "#f3e8ff", "card_bg_light": "#faf5ff", "card_bg_dark": "#020617"},
+    {"accent": "#22c55e", "accent_soft": "#dcfce7", "card_bg_light": "#f0fdf4", "card_bg_dark": "#020617"},
+    {"accent": "#e11d48", "accent_soft": "#ffe4e6", "card_bg_light": "#fff1f2", "card_bg_dark": "#020617"},
+    {"accent": "#06b6d4", "accent_soft": "#cffafe", "card_bg_light": "#ecfeff", "card_bg_dark": "#020617"},
+    {"accent": "#facc15", "accent_soft": "#fef9c3", "card_bg_light": "#fefce8", "card_bg_dark": "#020617"},
+    # 10-14
+    {"accent": "#4b5563", "accent_soft": "#e5e7eb", "card_bg_light": "#f9fafb", "card_bg_dark": "#020617"},
+    {"accent": "#0f766e", "accent_soft": "#ccfbf1", "card_bg_light": "#ecfeff", "card_bg_dark": "#020617"},
+    {"accent": "#7c3aed", "accent_soft": "#ede9fe", "card_bg_light": "#f5f3ff", "card_bg_dark": "#020617"},
+    {"accent": "#3b82f6", "accent_soft": "#dbeafe", "card_bg_light": "#eff6ff", "card_bg_dark": "#020617"},
+    {"accent": "#ea580c", "accent_soft": "#ffedd5", "card_bg_light": "#fff7ed", "card_bg_dark": "#020617"},
+    # 15-19
+    {"accent": "#0891b2", "accent_soft": "#e0f2fe", "card_bg_light": "#f0f9ff", "card_bg_dark": "#020617"},
+    {"accent": "#f97316", "accent_soft": "#ffedd5", "card_bg_light": "#fff7ed", "card_bg_dark": "#020617"},
+    {"accent": "#16a34a", "accent_soft": "#bbf7d0", "card_bg_light": "#f0fdf4", "card_bg_dark": "#020617"},
+    {"accent": "#ec4899", "accent_soft": "#fce7f3", "card_bg_light": "#fff1f2", "card_bg_dark": "#020617"},
+    {"accent": "#0ea5e9", "accent_soft": "#e0f2fe", "card_bg_light": "#f0f9ff", "card_bg_dark": "#020617"},
+]
+
 
 # ---------------------------------------------------
 # 2. Utility: state initialization
@@ -114,6 +171,8 @@ def init_session_state():
     ss.setdefault("language", "en")
     ss.setdefault("theme_mode", "light")
     ss.setdefault("painter_style", 0)
+    ss.setdefault("font_scale", 1.0)
+    ss.setdefault("density", "comfortable")
     ss.setdefault("api_keys", {})
     ss.setdefault("agents_config", None)
     ss.setdefault("raw_input_text", "")
@@ -128,23 +187,183 @@ def init_session_state():
         "dashboard": False,
         "chat": False,
     })
+    # NEW: multi-document snapshot history
+    ss.setdefault("documents", [])
+    ss.setdefault("current_doc_index", None)
+
 
 # ---------------------------------------------------
-# 3. API key handling
+# 3. Theming: CSS injection & HTML export
+# ---------------------------------------------------
+
+def inject_theme_css(theme_mode: str, painter_index: int, font_scale: float, density: str):
+    palette = PAINTER_PALETTES[painter_index % len(PAINTER_PALETTES)]
+    accent = palette["accent"]
+    accent_soft = palette["accent_soft"]
+    if theme_mode == "light":
+        bg = "#f3f4f6"
+        text = "#0f172a"
+        card_bg = palette["card_bg_light"]
+    else:
+        bg = "#020617"
+        text = "#e5e7eb"
+        card_bg = palette["card_bg_dark"]
+
+    padding = "1.1rem" if density == "comfortable" else "0.6rem"
+    margin = "0.6rem" if density == "comfortable" else "0.3rem"
+    border_radius = "14px"
+
+    css = f"""
+    <style>
+    body {{
+        background: {bg};
+        color: {text};
+        font-size: {font_scale}rem;
+    }}
+    .wow-card {{
+        background: {card_bg};
+        border-radius: {border_radius};
+        border: 1px solid rgba(148, 163, 184, 0.5);
+        padding: {padding};
+        margin-bottom: {margin};
+        box-shadow: 0 10px 25px rgba(15,23,42,0.05);
+    }}
+    .wow-highlight {{
+        border-left: 4px solid {accent};
+        background: {accent_soft};
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        margin: 0.75rem 0;
+    }}
+    .wow-kpi-title {{
+        font-size: {0.85 * font_scale}rem;
+        color: {text};
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }}
+    .wow-kpi-value {{
+        font-size: {1.1 * font_scale}rem;
+        font-weight: 600;
+        color: {accent};
+    }}
+    .wow-section-title {{
+        border-bottom: 2px solid {accent_soft};
+        padding-bottom: 0.2rem;
+        margin-bottom: 0.75rem;
+    }}
+    .wow-badge-present {{
+        background: rgba(34,197,94,0.12);
+        color: #16a34a;
+        border-radius: 999px;
+        padding: 0.1rem 0.7rem;
+        font-size: 0.8rem;
+    }}
+    .wow-badge-missing {{
+        background: rgba(239,68,68,0.12);
+        color: #dc2626;
+        border-radius: 999px;
+        padding: 0.1rem 0.7rem;
+        font-size: 0.8rem;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+
+def generate_html_report(summary_md: str, lang: str, theme_mode: str,
+                         painter_index: int, font_scale: float, density: str) -> str:
+    """Generate a themed HTML report using current WOW theme settings."""
+    palette = PAINTER_PALETTES[painter_index % len(PAINTER_PALETTES)]
+    accent = palette["accent"]
+    accent_soft = palette["accent_soft"]
+    if theme_mode == "light":
+        bg = "#f3f4f6"
+        text = "#0f172a"
+        card_bg = palette["card_bg_light"]
+    else:
+        bg = "#020617"
+        text = "#e5e7eb"
+        card_bg = palette["card_bg_dark"]
+
+    padding = "1.2rem" if density == "comfortable" else "0.7rem"
+    border_radius = "16px"
+
+    html_body = markdown(summary_md, extensions=["tables", "fenced_code"])
+    title = "WOW FDA 510(k) Report" if lang == "en" else "WOW FDA 510(k) 報告"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="{lang}">
+    <head>
+        <meta charset="utf-8" />
+        <title>{title}</title>
+        <style>
+        body {{
+            margin: 0;
+            padding: 1.5rem;
+            background: {bg};
+            color: {text};
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: {font_scale}rem;
+        }}
+        .wow-container {{
+            max-width: 960px;
+            margin: 0 auto;
+        }}
+        .wow-card {{
+            background: {card_bg};
+            border-radius: {border_radius};
+            border: 1px solid rgba(148, 163, 184, 0.6);
+            padding: {padding};
+            box-shadow: 0 18px 45px rgba(15,23,42,0.12);
+        }}
+        h1, h2, h3, h4 {{
+            color: {text};
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0.5rem 0 1.2rem 0;
+        }}
+        th, td {{
+            border: 1px solid rgba(148,163,184,0.5);
+            padding: 0.4rem 0.6rem;
+        }}
+        th {{
+            background: {accent_soft};
+        }}
+        a {{
+            color: {accent};
+        }}
+        </style>
+    </head>
+    <body>
+        <div class="wow-container">
+            <div class="wow-card">
+                {html_body}
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+# ---------------------------------------------------
+# 4. API key handling
 # ---------------------------------------------------
 
 def get_api_key(name: str, session_key: str):
-    # Priority: env var -> session state input -> None
     env_val = os.getenv(name)
     if env_val:
         return env_val
     return st.session_state["api_keys"].get(session_key)
 
+
 def render_api_key_section(strings):
     st.subheader(strings["api_keys_section"])
     st.caption(strings["missing_keys_note"])
 
-    # Gemini
     if not os.getenv("GEMINI_API_KEY"):
         key = st.text_input("Gemini API Key", type="password")
         if key:
@@ -152,7 +371,6 @@ def render_api_key_section(strings):
     else:
         st.text("Gemini API: Using environment configuration")
 
-    # OpenAI
     if not os.getenv("OPENAI_API_KEY"):
         key = st.text_input("OpenAI API Key", type="password")
         if key:
@@ -160,7 +378,6 @@ def render_api_key_section(strings):
     else:
         st.text("OpenAI API: Using environment configuration")
 
-    # Anthropic
     if not os.getenv("ANTHROPIC_API_KEY"):
         key = st.text_input("Anthropic API Key", type="password")
         if key:
@@ -168,7 +385,6 @@ def render_api_key_section(strings):
     else:
         st.text("Anthropic API: Using environment configuration")
 
-    # Grok
     if not os.getenv("GROK_API_KEY"):
         key = st.text_input("Grok (xAI) API Key", type="password")
         if key:
@@ -176,8 +392,9 @@ def render_api_key_section(strings):
     else:
         st.text("Grok API: Using environment configuration")
 
+
 # ---------------------------------------------------
-# 4. LLM call wrappers
+# 5. LLM call wrappers
 # ---------------------------------------------------
 
 def get_gemini_client():
@@ -187,11 +404,13 @@ def get_gemini_client():
     client = genai.Client(api_key=key)
     return client
 
+
 def get_openai_client():
     key = get_api_key("OPENAI_API_KEY", "openai")
     if not key:
         raise RuntimeError("OpenAI API key not configured.")
     return OpenAI(api_key=key)
+
 
 def get_anthropic_client():
     key = get_api_key("ANTHROPIC_API_KEY", "anthropic")
@@ -199,21 +418,17 @@ def get_anthropic_client():
         raise RuntimeError("Anthropic API key not configured.")
     return anthropic.Anthropic(api_key=key)
 
+
 def get_grok_client():
     key = get_api_key("GROK_API_KEY", "grok")
     if not key:
         raise RuntimeError("Grok API key not configured.")
-    # Adjust base_url as needed for xAI's Grok API
     return GrokClient(api_key=key, base_url="https://api.x.ai/v1")
 
+
 def call_model(provider, model, system_prompt, user_content, max_tokens, schema=None):
-    """
-    Generic LLM call.
-    schema: for Gemini structured output (response_schema)
-    """
     if provider == "gemini":
         client = get_gemini_client()
-        # Adjust according to your installed Gemini client library
         config = {
             "system_instruction": system_prompt,
             "max_output_tokens": max_tokens,
@@ -227,7 +442,6 @@ def call_model(provider, model, system_prompt, user_content, max_tokens, schema=
             contents=user_content,
             config=config
         )
-        # If schema enforced, result.text should be JSON
         return result.text
 
     elif provider == "openai":
@@ -267,8 +481,9 @@ def call_model(provider, model, system_prompt, user_content, max_tokens, schema=
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
+
 # ---------------------------------------------------
-# 5. File & text handling
+# 6. File & text handling
 # ---------------------------------------------------
 
 def extract_text_from_file(uploaded_file):
@@ -289,7 +504,6 @@ def extract_text_from_file(uploaded_file):
         try:
             obj = json.loads(raw)
             if isinstance(obj, dict):
-                # Heuristic: look for main text fields
                 for key in ["summary", "content", "text", "body"]:
                     if key in obj and isinstance(obj[key], str):
                         return obj[key]
@@ -297,11 +511,11 @@ def extract_text_from_file(uploaded_file):
         except Exception:
             return raw
 
-    # Fallback
     return data.decode("utf-8", errors="ignore")
 
+
 # ---------------------------------------------------
-# 6. WOW status indicators
+# 7. WOW status indicators
 # ---------------------------------------------------
 
 def render_status_indicators(strings):
@@ -318,8 +532,9 @@ def render_status_indicators(strings):
     status_chip(strings["status_dashboard"], status["dashboard"])
     status_chip(strings["status_chat"], status["chat"])
 
+
 # ---------------------------------------------------
-# 7. Agents pipeline handling
+# 8. Agents pipeline handling
 # ---------------------------------------------------
 
 def load_agents_config():
@@ -328,8 +543,8 @@ def load_agents_config():
             cfg = yaml.safe_load(f)
         st.session_state["agents_config"] = cfg["agents"]
 
+
 def run_single_agent(agent_def, input_text, agent_idx):
-    # Determine overrides
     agent_id = agent_def["id"]
     custom_model = st.session_state.get(f"agent_{agent_id}_model", agent_def["default_model"])
     custom_max_tokens = st.session_state.get(
@@ -349,6 +564,7 @@ def run_single_agent(agent_def, input_text, agent_idx):
     )
     st.session_state["pipeline_outputs"][agent_id] = output
     return output
+
 
 def run_full_pipeline():
     load_agents_config()
@@ -372,7 +588,6 @@ def run_full_pipeline():
             last_output = run_single_agent(agent, last_output, idx)
         progress.progress((idx + 1) / len(agents))
 
-    # Save important pieces
     structured_id = "extract_510k_structured"
     summary_id = "generate_dashboard_summary"
     infographics_id = "design_infographics"
@@ -400,9 +615,121 @@ def run_full_pipeline():
     status["dashboard"] = True
     status["chat"] = True
 
+    # NEW: auto-save snapshot after successful run
+    save_current_document_snapshot(auto=True)
+
+
 # ---------------------------------------------------
-# 8. Dashboard rendering
+# 9. Document snapshot history (NEW FEATURE)
 # ---------------------------------------------------
+
+def build_snapshot_label():
+    structured = st.session_state.get("structured_json") or {}
+    device_name = structured.get("device_name")
+    if device_name:
+        return device_name
+    text = st.session_state.get("raw_input_text", "") or ""
+    snippet = text.strip().replace("\n", " ")
+    return (snippet[:50] + "...") if len(snippet) > 50 else (snippet or "Untitled 510(k)")
+
+
+def save_current_document_snapshot(auto: bool = False):
+    if not st.session_state.get("raw_input_text", "").strip():
+        return
+    label = build_snapshot_label()
+    snapshot = {
+        "label": label,
+        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "raw_input_text": st.session_state.get("raw_input_text"),
+        "structured_json": st.session_state.get("structured_json"),
+        "summary_markdown": st.session_state.get("summary_markdown"),
+        "infographics_layout": st.session_state.get("infographics_layout"),
+        "chat_history": st.session_state.get("chat_history", []),
+    }
+    st.session_state["documents"].append(snapshot)
+    st.session_state["current_doc_index"] = len(st.session_state["documents"]) - 1
+    if not auto:
+        st.success("Snapshot saved for this 510(k) document.")
+
+
+def load_document_snapshot(index: int):
+    docs = st.session_state.get("documents", [])
+    if index is None or index < 0 or index >= len(docs):
+        return
+    doc = docs[index]
+    st.session_state["raw_input_text"] = doc["raw_input_text"]
+    st.session_state["structured_json"] = doc["structured_json"]
+    st.session_state["summary_markdown"] = doc["summary_markdown"]
+    st.session_state["infographics_layout"] = doc["infographics_layout"]
+    st.session_state["chat_history"] = doc.get("chat_history", [])
+    st.session_state["current_doc_index"] = index
+
+
+def render_history_section(strings):
+    st.subheader(strings["history_section"])
+    if st.button(strings["save_snapshot"]):
+        save_current_document_snapshot(auto=False)
+
+    docs = st.session_state.get("documents", [])
+    if not docs:
+        st.caption(strings["no_snapshots"])
+        return
+
+    labels = [
+        f"{i + 1}. {doc['label']} ({doc['timestamp']})"
+        for i, doc in enumerate(docs)
+    ]
+    current = st.session_state.get("current_doc_index") or 0
+    selected = st.selectbox(strings["select_snapshot"], options=list(range(len(labels))),
+                            format_func=lambda idx: labels[idx], index=current)
+    if selected != current:
+        load_document_snapshot(selected)
+        st.experimental_rerun()
+
+
+# ---------------------------------------------------
+# 10. Dashboard rendering (with WOW cards & checklist)
+# ---------------------------------------------------
+
+def render_completeness_checklist(strings, structured):
+    st.markdown(f"### {strings['checklist_title']}")
+    required_fields = {
+        "submitter_information": "Submitter information",
+        "device_name": "Device name",
+        "classification": "Classification",
+        "regulation_number": "Regulation number",
+        "product_code": "Product code",
+        "panel": "Panel",
+        "predicates": "Predicate devices",
+        "indications_for_use": "Indications for use",
+        "technological_characteristics": "Technological characteristics",
+        "performance_data": "Performance data",
+        "clinical_performance": "Clinical performance",
+        "substantial_equivalence_discussion": "Substantial equivalence discussion",
+    }
+
+    cols = st.columns(2)
+    items = list(required_fields.items())
+    mid = len(items) // 2
+
+    def render_list(sub_items):
+        for key, label in sub_items:
+            present = bool(structured.get(key))
+            badge_class = "wow-badge-present" if present else "wow-badge-missing"
+            status_label = strings["checklist_present"] if present else strings["checklist_missing"]
+            st.markdown(
+                f"<div style='margin-bottom:0.35rem;'>"
+                f"<span>{label}</span> "
+                f"<span class='{badge_class}'>{status_label}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    with cols[0]:
+        render_list(items[:mid])
+    with cols[1]:
+        render_list(items[mid:])
+
 
 def render_dashboard(strings):
     st.subheader("510(k) Structured Summary")
@@ -410,51 +737,93 @@ def render_dashboard(strings):
     structured = st.session_state.get("structured_json") or {}
     summary_md = st.session_state.get("summary_markdown")
 
-    if structured:
-        # KPI cards example
-        cols = st.columns(3)
-        with cols[0]:
-            st.metric("Device Name", structured.get("device_name", "N/A"))
-        with cols[1]:
-            st.metric("Product Code", structured.get("product_code", "N/A"))
-        with cols[2]:
-            st.metric("Panel", structured.get("panel", "N/A"))
+    with st.container():
+        st.markdown("<div class='wow-card'>", unsafe_allow_html=True)
 
-        # Submitter table
-        if "submitter_information" in structured:
-            st.markdown("#### Submitter Information")
-            sub = structured["submitter_information"]
-            rows = "\n".join(
-                f"| {k} | {v} |" for k, v in sub.items()
-            )
+        if structured:
+            cols = st.columns(3)
+            with cols[0]:
+                st.markdown("<div class='wow-kpi-title'>Device Name</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='wow-kpi-value'>{structured.get('device_name', 'N/A')}</div>",
+                            unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown("<div class='wow-kpi-title'>Product Code</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='wow-kpi-value'>{structured.get('product_code', 'N/A')}</div>",
+                            unsafe_allow_html=True)
+            with cols[2]:
+                st.markdown("<div class='wow-kpi-title'>Panel</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='wow-kpi-value'>{structured.get('panel', 'N/A')}</div>",
+                            unsafe_allow_html=True)
+
+            st.markdown("<hr/>", unsafe_allow_html=True)
+
+            # Completeness checklist (NEW FEATURE)
+            render_completeness_checklist(strings, structured)
+
+            # Key sections
+            if "submitter_information" in structured:
+                st.markdown("<h4 class='wow-section-title'>Submitter Information</h4>", unsafe_allow_html=True)
+                sub = structured["submitter_information"]
+                rows = "\n".join(f"| {k} | {v} |" for k, v in sub.items())
+                st.markdown("| Field | Value |\n|---|---|\n" + rows)
+
+            st.markdown("<h4 class='wow-section-title'>Indications for Use</h4>", unsafe_allow_html=True)
             st.markdown(
-                "| Field | Value |\n|---|---|\n" + rows
+                f"<div class='wow-highlight'>{structured.get('indications_for_use', 'N/A')}</div>",
+                unsafe_allow_html=True,
             )
 
-        # Indications & tech characteristics
-        st.markdown("#### Indications for Use")
-        st.info(structured.get("indications_for_use", "N/A"))
+            st.markdown("<h4 class='wow-section-title'>Technological Characteristics</h4>", unsafe_allow_html=True)
+            st.write(structured.get("technological_characteristics", "N/A"))
+        else:
+            st.info("Structured data not available yet. Run the pipeline to generate it.")
 
-        st.markdown("#### Technological Characteristics")
-        st.write(structured.get("technological_characteristics", "N/A"))
+        if summary_md:
+            st.markdown("<h4 class='wow-section-title'>Narrative Summary</h4>", unsafe_allow_html=True)
+            st.markdown(summary_md, unsafe_allow_html=False)
+        else:
+            st.info("Summary not available yet. Run the pipeline to generate it.")
 
+        if st.session_state.get("infographics_layout"):
+            st.markdown("<h4 class='wow-section-title'>Infographics & Tables</h4>", unsafe_allow_html=True)
+            layout = st.session_state["infographics_layout"]
+            st.json(layout)
+        else:
+            st.markdown("<h4 class='wow-section-title'>Infographics & Tables</h4>", unsafe_allow_html=True)
+            st.caption("Infographic layout will appear here after running the ‘Design Infographics’ agent.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # NEW: Report export buttons
     if summary_md:
-        st.markdown("#### Narrative Summary")
-        st.markdown(summary_md, unsafe_allow_html=False)
-    else:
-        st.info("Summary not available yet. Run the pipeline to generate it.")
+        col1, col2 = st.columns(2)
+        with col1:
+            md_bytes = summary_md.encode("utf-8")
+            st.download_button(
+                label=strings["download_md"],
+                data=md_bytes,
+                file_name="510k_summary.md",
+                mime="text/markdown"
+            )
+        with col2:
+            html_report = generate_html_report(
+                summary_md,
+                lang=st.session_state["language"],
+                theme_mode=st.session_state["theme_mode"],
+                painter_index=st.session_state["painter_style"],
+                font_scale=st.session_state["font_scale"],
+                density=st.session_state["density"],
+            )
+            st.download_button(
+                label=strings["download_html"],
+                data=html_report.encode("utf-8"),
+                file_name="510k_report_themed.html",
+                mime="text/html"
+            )
 
-    # Placeholder for infographics: user layout-driven charts
-    if st.session_state.get("infographics_layout"):
-        st.markdown("#### Infographics & Tables")
-        layout = st.session_state["infographics_layout"]
-        st.json(layout)
-    else:
-        st.markdown("#### Infographics & Tables")
-        st.caption("Infographic layout will appear here after running the ‘Design Infographics’ agent.")
 
 # ---------------------------------------------------
-# 9. Chat panel
+# 11. Chat panel
 # ---------------------------------------------------
 
 def render_chat_panel(strings):
@@ -477,7 +846,6 @@ def render_chat_panel(strings):
 
         st.session_state["chat_history"].append({"role": "user", "content": question})
 
-        # Build context from structured JSON + summary
         context_parts = []
         if st.session_state.get("structured_json"):
             context_parts.append("STRUCTURED_JSON:\n" + json.dumps(st.session_state["structured_json"], indent=2))
@@ -487,7 +855,6 @@ def render_chat_panel(strings):
         context = "\n\n".join(context_parts) if context_parts else "No 510(k) data loaded yet."
         user_content = context + "\n\nUSER_QUESTION:\n" + question
 
-        # Simple heuristic: choose provider by model name
         if model.startswith("gemini"):
             provider = "gemini"
         elif model.startswith("gpt-4"):
@@ -512,8 +879,9 @@ def render_chat_panel(strings):
         st.session_state["chat_history"].append({"role": "assistant", "content": answer})
         st.experimental_rerun()
 
+
 # ---------------------------------------------------
-# 10. Agent pipeline UI
+# 12. Agent pipeline UI
 # ---------------------------------------------------
 
 def render_pipeline_panel(strings):
@@ -527,10 +895,9 @@ def render_pipeline_panel(strings):
 
     for agent in agents:
         agent_id = agent["id"]
-        st.markdown(f"---")
+        st.markdown("---")
         st.markdown(f"#### {agent['label']}")
 
-        # Model selector
         default_model = agent["default_model"]
         model_key = f"agent_{agent_id}_model"
         st.session_state.setdefault(model_key, default_model)
@@ -541,7 +908,6 @@ def render_pipeline_panel(strings):
             key=model_key,
         )
 
-        # Max tokens
         max_tokens_key = f"agent_{agent_id}_max_tokens"
         st.session_state.setdefault(max_tokens_key, agent.get("max_tokens", DEFAULT_MAX_TOKENS))
         st.number_input(
@@ -552,7 +918,6 @@ def render_pipeline_panel(strings):
             key=max_tokens_key,
         )
 
-        # Prompt editor
         prompt_key = f"agent_{agent_id}_prompt"
         st.session_state.setdefault(prompt_key, agent["system_prompt"])
         st.text_area(
@@ -561,7 +926,6 @@ def render_pipeline_panel(strings):
             height=150,
         )
 
-        # Input for this agent (previous agent’s output, editable)
         if agent_id == agents[0]["id"]:
             default_input = st.session_state["raw_input_text"]
         else:
@@ -576,7 +940,6 @@ def render_pipeline_panel(strings):
             height=150,
         )
 
-        # Output area
         output_key = f"agent_{agent_id}_output"
         st.session_state.setdefault(output_key, st.session_state["pipeline_outputs"].get(agent_id, ""))
 
@@ -584,7 +947,6 @@ def render_pipeline_panel(strings):
             with st.spinner(f"Running {agent['label']}..."):
                 output = run_single_agent(agent, st.session_state[input_key], agents.index(agent))
                 st.session_state[output_key] = output
-                # If it's one of the key agents, update global structured/summary/infographics
                 if agent_id == "extract_510k_structured":
                     try:
                         st.session_state["structured_json"] = json.loads(output)
@@ -604,8 +966,9 @@ def render_pipeline_panel(strings):
             height=200,
         )
 
+
 # ---------------------------------------------------
-# 11. Main app
+# 13. Main app
 # ---------------------------------------------------
 
 def main():
@@ -616,14 +979,15 @@ def main():
     )
     init_session_state()
 
-    # Sidebar: Theme, language, style, API
     with st.sidebar:
         st.markdown("## WOW Controls")
         st.session_state["theme_mode"] = st.radio(
-            "Theme", ["light", "dark"], index=0 if st.session_state["theme_mode"] == "light" else 1
+            "Theme", ["light", "dark"],
+            index=0 if st.session_state["theme_mode"] == "light" else 1
         )
         st.session_state["language"] = st.radio(
-            "Language", ["en", "zh_tw"], format_func=lambda x: "English" if x == "en" else "繁體中文"
+            "Language", ["en", "zh_tw"],
+            format_func=lambda x: "English" if x == "en" else "繁體中文"
         )
         st.session_state["painter_style"] = st.slider(
             "Magic Style Wheel", 0, len(PAINTER_STYLES) - 1, st.session_state["painter_style"]
@@ -631,9 +995,34 @@ def main():
         st.caption(f"Style: {PAINTER_STYLES[st.session_state['painter_style']]}")
 
         strings = STRINGS[st.session_state["language"]]
+
+        # NEW: Output appearance controls
+        st.markdown(f"### {strings['appearance_section']}")
+        st.session_state["font_scale"] = st.slider(
+            strings["font_scale"], 0.85, 1.3, st.session_state["font_scale"], step=0.05
+        )
+        density_label = st.selectbox(
+            strings["density"],
+            ["comfortable", "compact"],
+            format_func=lambda v: strings["density_comfortable"] if v == "comfortable" else strings["density_compact"],
+        )
+        st.session_state["density"] = density_label
+
         render_api_key_section(strings)
 
+        # NEW: Document history controls
+        st.markdown("---")
+        render_history_section(strings)
+
     strings = STRINGS[st.session_state["language"]]
+
+    # Inject WOW theme CSS for the whole page
+    inject_theme_css(
+        theme_mode=st.session_state["theme_mode"],
+        painter_index=st.session_state["painter_style"],
+        font_scale=st.session_state["font_scale"],
+        density=st.session_state["density"],
+    )
 
     st.title(strings["title"])
     st.caption(strings["subtitle"])
@@ -644,7 +1033,6 @@ def main():
         strings["pipeline_tab"],
     ])
 
-    # Landing: upload/paste + analyze button
     with tab_landing:
         col1, col2 = st.columns(2)
         with col1:
@@ -667,7 +1055,6 @@ def main():
             else:
                 run_full_pipeline()
 
-    # Dashboard & Chat
     with tab_dashboard:
         col_left, col_right = st.columns([2, 1])
         with col_left:
@@ -675,7 +1062,6 @@ def main():
         with col_right:
             render_chat_panel(strings)
 
-    # Agent pipeline (advanced controls)
     with tab_pipeline:
         render_pipeline_panel(strings)
 
