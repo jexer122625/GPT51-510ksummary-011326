@@ -16,3 +16,4 @@ reportlab
 PyPDF2
 markdown
 anthropic
+google-genai
