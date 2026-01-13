@@ -879,22 +879,40 @@ def render_chat_panel(strings):
 # ---------------------------------------------------
 # 12. Agent pipeline UI
 # ---------------------------------------------------
-
+###
 def render_pipeline_panel(strings):
     load_agents_config()
-    agents = st.session_state["agents_config"]
+    agents = st.session_state.get("agents_config") or []
 
     st.markdown(f"### {strings['pipeline_tab']}")
+
+    if not agents:
+        st.info("No agents are configured. Please check agents.yaml.")
+        return
 
     if st.button(strings["run_all"]):
         run_full_pipeline()
 
-    for agent in agents:
-        agent_id = agent["id"]
-        st.markdown("---")
-        st.markdown(f"#### {agent['label']}")
+    for idx, agent in enumerate(agents):
+        # Robust checks to avoid crashes on bad config
+        if not isinstance(agent, dict):
+            st.warning(f"Skipping non-dict agent definition at index {idx}: {agent}")
+            continue
 
-        default_model = agent["default_model"]
+        agent_id = agent.get("id")
+        agent_label = agent.get("label", f"Agent {idx+1}")
+
+        if not agent_id:
+            st.warning(f"Skipping agent without 'id' at index {idx}: {agent}")
+            continue
+
+        default_model = agent.get("default_model", MODEL_OPTIONS[0])
+        provider = agent.get("provider", "gemini")
+
+        st.markdown("---")
+        st.markdown(f"#### {agent_label} ({agent_id})")
+
+        # Model selector
         model_key = f"agent_{agent_id}_model"
         st.session_state.setdefault(model_key, default_model)
         st.selectbox(
@@ -904,6 +922,7 @@ def render_pipeline_panel(strings):
             key=model_key,
         )
 
+        # Max tokens
         max_tokens_key = f"agent_{agent_id}_max_tokens"
         st.session_state.setdefault(max_tokens_key, agent.get("max_tokens", DEFAULT_MAX_TOKENS))
         st.number_input(
@@ -914,19 +933,22 @@ def render_pipeline_panel(strings):
             key=max_tokens_key,
         )
 
+        # Prompt editor
         prompt_key = f"agent_{agent_id}_prompt"
-        st.session_state.setdefault(prompt_key, agent["system_prompt"])
+        st.session_state.setdefault(prompt_key, agent.get("system_prompt", ""))
         st.text_area(
             strings["agent_prompt"],
             key=prompt_key,
             height=150,
         )
 
-        if agent_id == agents[0]["id"]:
-            default_input = st.session_state["raw_input_text"]
+        # Input to this agent
+        if idx == 0:
+            default_input = st.session_state.get("raw_input_text", "")
         else:
-            prev_agent = agents[agents.index(agent) - 1]
-            default_input = st.session_state["pipeline_outputs"].get(prev_agent["id"], "")
+            prev_agent = agents[idx - 1]
+            prev_id = prev_agent.get("id")
+            default_input = st.session_state["pipeline_outputs"].get(prev_id, "") if prev_id else ""
 
         input_key = f"agent_{agent_id}_input"
         st.session_state.setdefault(input_key, default_input)
@@ -936,13 +958,16 @@ def render_pipeline_panel(strings):
             height=150,
         )
 
+        # Output (editable)
         output_key = f"agent_{agent_id}_output"
         st.session_state.setdefault(output_key, st.session_state["pipeline_outputs"].get(agent_id, ""))
 
         if st.button(strings["run_agent"], key=f"run_{agent_id}"):
-            with st.spinner(f"Running {agent['label']}..."):
-                output = run_single_agent(agent, st.session_state[input_key], agents.index(agent))
+            with st.spinner(f"Running {agent_label}..."):
+                output = run_single_agent(agent, st.session_state[input_key], idx)
                 st.session_state[output_key] = output
+
+                # Update global structured/summary/infographics if this is one of the core agents
                 if agent_id == "extract_510k_structured":
                     try:
                         st.session_state["structured_json"] = json.loads(output)
@@ -961,8 +986,7 @@ def render_pipeline_panel(strings):
             key=output_key,
             height=200,
         )
-
-
+###
 # ---------------------------------------------------
 # 13. Main app
 # ---------------------------------------------------
